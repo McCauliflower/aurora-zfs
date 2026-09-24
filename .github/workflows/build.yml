@@ -20,6 +20,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read
       packages: write
@@ -34,9 +35,7 @@ jobs:
 
       - name: Verify base image signature
         run: |
-          curl -fsSL -o /tmp/ublue.pub \
-            https://raw.githubusercontent.com/ublue-os/aurora/main/cosign.pub
-          cosign verify --key /tmp/ublue.pub "${BASE_IMAGE}"
+          cosign verify --key ublue-os.pub "${BASE_IMAGE}"
 
       - name: Resolve base digest
         id: base
@@ -56,6 +55,7 @@ jobs:
             .
 
       - name: Log in to ghcr.io
+        if: github.ref == 'refs/heads/main'
         run: |
           podman login ghcr.io \
             -u "${{ github.actor }}" \
@@ -63,6 +63,7 @@ jobs:
 
       - name: Push
         id: push
+        if: github.ref == 'refs/heads/main'
         run: |
           dest="${IMAGE_REGISTRY,,}/${IMAGE_NAME}"
           for tag in stable "$(date -u +%Y%m%d)"; do
@@ -73,6 +74,7 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Sign
+        if: github.ref == 'refs/heads/main'
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
         run: |
