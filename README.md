@@ -1,122 +1,76 @@
 # aurora-zfs
 
-Aurora, rebuilt nightly with ZFS added back.
+Messing around with Aurora + ZFS in a VM. Aurora drops ZFS support at Fedora 45,
+so this just reinstalls the kernel + ZFS module pair Aurora's own build scripts
+used to install, on top of stock `ghcr.io/ublue-os/aurora:stable`.
 
-Aurora drops ZFS at Fedora 45. This image takes stock `ghcr.io/ublue-os/aurora:stable`
-and reinstalls Universal Blue's matched kernel + ZFS module pair on top. It does not
-patch a kernel — it installs the same pair Aurora's own build scripts install today.
+Mostly an excuse to poke at rpm-ostree, container image layering, and cosign
+signing without breaking a real machine. Nothing here is meant to go anywhere
+beyond a throwaway VM.
 
-## How updates work
+## How it's wired up
 
-    ublue builds aurora:stable  ->  this repo adds ZFS  ->  the machine pulls it
+    ublue builds aurora:stable  ->  this adds ZFS  ->  test VM pulls it
 
-GitHub Actions rebuilds nightly (10:05 UTC), verifies the upstream base image
-signature, builds, pushes to `ghcr.io/mccauliflower/aurora-zfs:stable`, and signs
-the result. The machine's existing auto-update pulls it on its normal schedule.
-
-Steady-state effort: none.
+A GitHub Action rebuilds nightly, checks the upstream signature, builds, pushes
+to `ghcr.io/mccauliflower/aurora-zfs:stable`, and signs the result — mostly so
+I can see whether the signing/verification flow actually behaves the way I
+think it does.
 
 ## The twice-a-year bump
 
-When Aurora's stable stream moves to the next Fedora release, change
-`FEDORA_VERSION` in the `Containerfile` and commit.
+When Aurora's stable stream moves to the next Fedora release, bump
+`FEDORA_VERSION` in the `Containerfile`.
 
-If you miss it, `build_files/zfs.sh` compares the base image's `VERSION_ID`
-against `FEDORA_VERSION` and **aborts before publishing anything**. The machine
-keeps running the last good image. Failure is loud and safe, never silent.
+`build_files/zfs.sh` checks the base image's `VERSION_ID` against
+`FEDORA_VERSION` and bails before publishing if they don't match, so a missed
+bump doesn't quietly ship a broken image to the VM. It also checks that
+`akmods-zfs` actually has a module for the kernel in play.
 
-`zfs.sh` also aborts if `akmods-zfs` has no module built for the kernel in the
-akmods image, and realigns the base kernel to that one if they differ, so the
-kernel and the module are always a matched pair.
-
-## Signing and verification
-
-Signing uses a cosign key pair. The private half is the `SIGNING_SECRET` repo
-secret; the public half belongs on the machine at
-`/etc/pki/containers/aurora-zfs.pub`.
+## Signing (mostly just to see if it works)
 
     cosign generate-key-pair
 
-`policy-fragment.json` is the scope to merge into `/etc/containers/policy.json`.
-Policy scopes match most-specific-first, so this entry takes precedence over the
-`""` -> `insecureAcceptAnything` fallback that would otherwise accept this image
-with no verification at all.
+`policy-fragment.json` is a scope for `/etc/containers/policy.json` on the test
+VM — without it, `ostree-image-signed:` reports success without actually
+checking anything.
 
-Without it a rebase still reports `ostree-image-signed:` while verifying nothing.
-
-**Verify rejection before trusting it.** Push an unsigned tag and confirm the pull
-is refused:
+There's an intentionally-unsigned tag to confirm the VM actually refuses it:
 
     podman pull ghcr.io/mccauliflower/aurora-zfs:unsigned-test
 
-## Rebase
+## Rebasing the test VM
 
     sudo rpm-ostree rebase \
       ostree-image-signed:docker://ghcr.io/mccauliflower/aurora-zfs:stable
 
-The `ostree-image-signed:` prefix is the signature enforcement. rpm-ostree is used
-rather than `bootc switch` because rpm-ostree owns the local package layering on this
-machine and `uupd` is registered as its updates driver; layered packages and base
-removals carry across the rebase untouched.
+Using rpm-ostree instead of `bootc switch` just because that's what the VM's
+`uupd` setup expects.
 
-Roll back with `sudo bootc rollback` and reboot.
+Roll back with `sudo bootc rollback` if it goes sideways.
 
-## Local test build
+## Local build
 
     podman build -t localhost/aurora-zfs:test .
 
 ## Layered packages
 
-Deliberately none. This image adds ZFS and nothing else.
+None on purpose — the image is just ZFS. Everything else stays layered on the
+VM with `rpm-ostree install` so a bad package can't take down the nightly
+build.
 
-Everyday packages (clamav, nmap, ...) stay layered locally with `rpm-ostree install`,
-which keeps working after the rebase and carries across it. Keeping them out of the
-image means a broken package can never take down the nightly build, and a dead build
-means the machine silently stops receiving security updates.
+Kernel modules are the exception since those have to live in the image itself.
 
-Kernel modules are the exception — those must be in the image. Universal Blue
-pre-builds several in the same akmods image already pulled here (`v4l2loopback`,
-`xone`, `xpadneo`, `openrazer`, `vhba`, `wl`, `framework-laptop`); adding one means
-extending the install list in `build_files/zfs.sh`.
+## Some poking-around scripts
 
-The base-package removals on the current deployment (`kde-connect`, `krunner-bazaar`,
-`kate-krunner-plugin`) are local rpm-ostree state and carry across the rebase too.
+`check-os-freshness.sh` is just a cron-ish check on whether the VM's image is
+stale — dead build, failed push, broken `uupd`, whatever. Same bucket either
+way.
 
-## Monitoring
+`verify-image-chain.sh` checks that the recorded base-image digest is actually
+signed by ublue, since a signature only proves *I* signed something, not what
+it was built from. Refuses to run as root on purpose — it's parsing JSON off
+the network, no reason to give it more than it needs.
 
-`check-os-freshness.sh` answers one question daily: is the running image too old?
-It does not care *why* — a dead build, a failed push, a broken `uupd`, a rejected
-signature and an unresolvable layered package all look the same from here.
-
-Checks the booted image age, `uupd.service` result, and the age of the image in the
-registry. Warns at 5 days, critical at 10. Desktop notification plus a journal entry
-tagged `os-freshness`. Exits 1 on warning, 2 on critical. If the check itself cannot
-determine the remote age, that is treated as critical rather than passing silently.
-
-    cp check-os-freshness.sh ~/Documents/server/custom-scripts/
-    cp systemd/os-freshness.* ~/.config/systemd/user/
-    systemctl --user enable --now os-freshness.timer
-
-## Verifying the chain back to ublue
-
-Your signature only proves you built the image — not what you built it from. The
-build records the base image digest as a label, and `verify-image-chain.sh` checks
-both halves: that the image is signed by your key, and that the recorded base digest
-is signed by ublue's key.
-
-`policy.json` cannot do this. A signature binds to one digest in one repository, so
-ublue's signature can never appear on a derived image.
-
-The script needs no privileges and **refuses to run as root**, because it parses JSON
-fetched from a remote registry. It is installed root-owned in `/usr/local/bin` so that
-nothing running as the user can modify it — note that a root-owned file in a
-user-owned directory is still replaceable, since directory write permission allows
-unlink and rename. The directory ownership is what matters.
-
-It also verifies its own toolchain is root-owned and not user-writable before
-proceeding. A brew-installed `cosign` does not qualify: `~/.linuxbrew/bin` is
-user-writable, so cosign could be swapped for a stub that always exits 0.
-
-    sudo ./install-root.sh
-    cp systemd/*.timer systemd/*.service ~/.config/systemd/user/
-    systemctl --user enable --now os-freshness.timer image-chain.timer
+Both are just here because I wanted to see if I could build them, not because
+anything depends on them.
