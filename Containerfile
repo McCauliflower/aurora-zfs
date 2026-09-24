@@ -1,6 +1,6 @@
 # bump FEDORA_VERSION when aurora's stable stream moves to the next fedora release
 ARG FEDORA_VERSION=44
-ARG BASE_TAG=stable
+ARG BASE_REF=ghcr.io/ublue-os/aurora:stable
 
 FROM scratch AS ctx
 COPY build_files /
@@ -8,7 +8,7 @@ COPY build_files /
 FROM ghcr.io/ublue-os/akmods:coreos-stable-${FEDORA_VERSION} AS akmods
 FROM ghcr.io/ublue-os/akmods-zfs:coreos-stable-${FEDORA_VERSION} AS akmods-zfs
 
-FROM ghcr.io/ublue-os/aurora:${BASE_TAG}
+FROM ${BASE_REF}
 
 ARG FEDORA_VERSION
 ARG BASE_DIGEST=unrecorded
