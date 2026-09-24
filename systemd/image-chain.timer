@@ -1,0 +1,10 @@
+[Unit]
+Description=Verify OS image signature chain back to the ublue base
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

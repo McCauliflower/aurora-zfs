@@ -1,0 +1,80 @@
+name: build-aurora-zfs
+
+on:
+  schedule:
+    - cron: '05 10 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+
+env:
+  IMAGE_NAME: aurora-zfs
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+  BASE_IMAGE: ghcr.io/ublue-os/aurora:stable
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Verify base image signature
+        run: |
+          curl -fsSL -o /tmp/ublue.pub \
+            https://raw.githubusercontent.com/ublue-os/aurora/main/cosign.pub
+          cosign verify --key /tmp/ublue.pub "${BASE_IMAGE}"
+
+      - name: Resolve base digest
+        id: base
+        run: |
+          digest=$(skopeo inspect --format '{{.Digest}}' "docker://${BASE_IMAGE}")
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Base pinned to ${digest}"
+
+      - name: Build
+        id: build
+        run: |
+          podman build \
+            --build-arg BASE_TAG=stable \
+            --build-arg BASE_DIGEST="${{ steps.base.outputs.digest }}" \
+            --security-opt label=disable \
+            -t "${IMAGE_NAME}:${{ github.sha }}" \
+            .
+
+      - name: Log in to ghcr.io
+        run: |
+          podman login ghcr.io \
+            -u "${{ github.actor }}" \
+            -p "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Push
+        id: push
+        run: |
+          dest="${IMAGE_REGISTRY,,}/${IMAGE_NAME}"
+          for tag in stable "$(date -u +%Y%m%d)"; do
+            podman push "${IMAGE_NAME}:${{ github.sha }}" "docker://${dest}:${tag}"
+          done
+          digest=$(skopeo inspect --format '{{.Digest}}' "docker://${dest}:stable")
+          echo "dest=${dest}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+        run: |
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
+            "${{ steps.push.outputs.dest }}@${{ steps.push.outputs.digest }}"

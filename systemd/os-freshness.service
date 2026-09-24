@@ -1,0 +1,16 @@
+[Unit]
+Description=Check that the OS image is still being updated
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/check-os-freshness.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+SystemCallFilter=@system-service

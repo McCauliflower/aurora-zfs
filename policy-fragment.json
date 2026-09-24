@@ -1,0 +1,11 @@
+{
+    "ghcr.io/mccauliflower/aurora-zfs": [
+        {
+            "type": "sigstoreSigned",
+            "keyPath": "/etc/pki/containers/aurora-zfs.pub",
+            "signedIdentity": {
+                "type": "matchRepository"
+            }
+        }
+    ]
+}

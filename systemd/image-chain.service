@@ -1,0 +1,16 @@
+[Unit]
+Description=Verify OS image signature chain back to the ublue base
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/verify-image-chain.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+SystemCallFilter=@system-service

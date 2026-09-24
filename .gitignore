@@ -1,0 +1,4 @@
+cosign.key
+*.key
+.env
+cosign-linux-amd64

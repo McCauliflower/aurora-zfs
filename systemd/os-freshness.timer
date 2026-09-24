@@ -1,0 +1,10 @@
+[Unit]
+Description=Check that the OS image is still being updated
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target
