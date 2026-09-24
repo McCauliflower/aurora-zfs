@@ -77,6 +77,13 @@ jobs:
         if: github.ref == 'refs/heads/main'
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: |
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
+            "${{ steps.push.outputs.dest }}@${{ steps.push.outputs.digest }}"
+
+      - name: Verify the signature we just made
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cosign verify --key cosign.pub \
             "${{ steps.push.outputs.dest }}@${{ steps.push.outputs.digest }}"
