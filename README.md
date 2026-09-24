@@ -27,7 +27,7 @@ When Aurora's stable stream moves to the next Fedora release, bump
 bump doesn't quietly ship a broken image to the VM. It also checks that
 `akmods-zfs` actually has a module for the kernel in play.
 
-## Signing (mostly just to see if it works)
+## Signing (to see if it works)
 
     cosign generate-key-pair
 
@@ -72,5 +72,4 @@ signed by ublue, since a signature only proves *I* signed something, not what
 it was built from. Refuses to run as root on purpose — it's parsing JSON off
 the network, no reason to give it more than it needs.
 
-Both are just here because I wanted to see if I could build them, not because
-anything depends on them.
+
