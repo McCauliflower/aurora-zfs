@@ -13,8 +13,8 @@ FROM ghcr.io/ublue-os/aurora:${BASE_TAG}
 ARG FEDORA_VERSION
 ARG BASE_DIGEST=unrecorded
 
-LABEL dev.yellowhat.base-image="ghcr.io/ublue-os/aurora"
-LABEL dev.yellowhat.base-digest="${BASE_DIGEST}"
+LABEL org.opencontainers.image.base.name="ghcr.io/ublue-os/aurora"
+LABEL org.opencontainers.image.base.digest="${BASE_DIGEST}"
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=akmods,src=/kernel-rpms,dst=/tmp/kernel-rpms \

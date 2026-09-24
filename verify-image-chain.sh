@@ -43,7 +43,7 @@ meta="$("${SKOPEO}" inspect "docker://${ref}" 2>/dev/null)" || { fail "cannot in
 read -r base_image base_digest < <("${PYTHON}" -c '
 import json,sys
 l=json.load(sys.stdin).get("Labels") or {}
-print(l.get("dev.yellowhat.base-image","") or "-", l.get("dev.yellowhat.base-digest","") or "-")
+print(l.get("org.opencontainers.image.base.name","") or "-", l.get("org.opencontainers.image.base.digest","") or "-")
 ' <<<"${meta}")
 
 if [[ "${base_digest}" == "-" || "${base_digest}" == "unrecorded" ]]; then
