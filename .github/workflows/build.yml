@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '05 10 * * *'
   workflow_dispatch:
+    inputs:
+      publish_unsigned_test:
+        description: 'Also publish a tiny UNSIGNED image to :unsigned-test, to verify policy rejection'
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths-ignore: ['**.md']
@@ -86,3 +91,15 @@ jobs:
         run: |
           cosign verify --key cosign.pub \
             "${{ steps.push.outputs.dest }}@${{ steps.push.outputs.digest }}"
+
+      - name: Publish unsigned test image
+        if: github.ref == 'refs/heads/main' && inputs.publish_unsigned_test
+        run: |
+          cat > /tmp/Containerfile.unsigned <<'EOF'
+          FROM scratch
+          COPY README.md /README.md
+          EOF
+          podman build -f /tmp/Containerfile.unsigned -t unsigned-test .
+          podman push unsigned-test \
+            "docker://${{ steps.push.outputs.dest }}:unsigned-test"
+          echo "Published UNSIGNED :unsigned-test - this tag is deliberately not signed."
