@@ -64,6 +64,8 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io \
             -u "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | cosign login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
 
       - name: Push
         id: push
