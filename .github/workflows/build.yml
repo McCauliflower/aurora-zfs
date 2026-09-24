@@ -85,8 +85,16 @@ jobs:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
           COSIGN_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: |
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
+          cosign sign --yes --registry-referrers-mode=legacy \
+            --key env://COSIGN_PRIVATE_KEY \
             "${{ steps.push.outputs.dest }}@${{ steps.push.outputs.digest }}"
+
+      - name: Confirm the .sig attachment podman requires exists
+        if: github.ref == 'refs/heads/main'
+        run: |
+          d="${{ steps.push.outputs.digest }}"
+          skopeo inspect "docker://${{ steps.push.outputs.dest }}:${d/:/-}.sig" >/dev/null
+          echo "signature attachment present as ${d/:/-}.sig"
 
       - name: Verify the signature we just made
         if: github.ref == 'refs/heads/main'
