@@ -29,4 +29,10 @@ install -o root -g root -m 0755 verify-image-chain.sh  /usr/local/bin/verify-ima
 install -o root -g root -m 0755 check-os-freshness.sh  /usr/local/bin/check-os-freshness.sh
 install -d -o root -g root -m 0755 /etc/pki/containers
 
+if [[ -f cosign.pub ]]; then
+    install -o root -g root -m 0644 cosign.pub /etc/pki/containers/aurora-zfs.pub
+else
+    echo "cosign.pub not found - run 'cosign generate-key-pair' first" >&2
+fi
+
 ls -la /usr/local/bin/cosign /usr/local/bin/verify-image-chain.sh /usr/local/bin/check-os-freshness.sh
