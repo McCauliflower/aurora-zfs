@@ -1,0 +1,3 @@
+docker:
+  ghcr.io/mccauliflower/aurora-zfs:
+    use-sigstore-attachments: true

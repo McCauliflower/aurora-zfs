@@ -13,6 +13,11 @@ fi
 
 [[ -f "${KEY}" ]] || { echo "missing ${KEY} - run install-root.sh first" >&2; exit 1; }
 
+install -d -o root -g root -m 0755 /etc/containers/registries.d
+install -o root -g root -m 0644 registries.d-aurora-zfs.yaml \
+    /etc/containers/registries.d/aurora-zfs.yaml
+echo "sigstore attachment lookup enabled for ${SCOPE}"
+
 backup="${POLICY}.bak.$(date +%Y%m%d-%H%M%S)"
 cp -a "${POLICY}" "${backup}"
 echo "backed up to ${backup}"
