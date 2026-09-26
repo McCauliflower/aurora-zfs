@@ -20,8 +20,8 @@ ARG AKMODS_VERSION=unrecorded
 ARG AKMODS_ZFS_NAME=unrecorded
 ARG AKMODS_ZFS_DIGEST=unrecorded
 ARG AKMODS_ZFS_VERSION=unrecorded
+ARG ZFS_VERSION=unrecorded
 ARG REVISION=unrecorded
-ARG CREATED=unrecorded
 
 LABEL org.opencontainers.image.base.name="ghcr.io/ublue-os/aurora"
 LABEL org.opencontainers.image.base.digest="${BASE_DIGEST}"
@@ -31,8 +31,12 @@ LABEL aurora-zfs.akmods.version="${AKMODS_VERSION}"
 LABEL aurora-zfs.akmods-zfs.name="${AKMODS_ZFS_NAME}"
 LABEL aurora-zfs.akmods-zfs.digest="${AKMODS_ZFS_DIGEST}"
 LABEL aurora-zfs.akmods-zfs.version="${AKMODS_ZFS_VERSION}"
+LABEL aurora-zfs.zfs.version="${ZFS_VERSION}"
 LABEL org.opencontainers.image.revision="${REVISION}"
-LABEL org.opencontainers.image.created="${CREATED}"
+LABEL org.opencontainers.image.source="https://github.com/McCauliflower/aurora-zfs"
+LABEL org.opencontainers.image.url="https://github.com/McCauliflower/aurora-zfs"
+LABEL org.opencontainers.image.title="aurora-zfs"
+LABEL org.opencontainers.image.description="Aurora with ZFS re-added"
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=akmods,src=/kernel-rpms,dst=/tmp/kernel-rpms \
