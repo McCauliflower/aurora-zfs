@@ -11,20 +11,112 @@ on:
         default: false
   push:
     branches: [main]
-    paths-ignore: ['**.md']
+    # keep in sync with IMAGE_INPUTS
+    paths:
+      - Containerfile
+      - build_files/**
+      - ublue-os.pub
+      - cosign.pub
+      - .github/**
 
 env:
   IMAGE_NAME: aurora-zfs
   IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
   BASE_IMAGE: ghcr.io/ublue-os/aurora:stable
+  AKMODS_IMAGE: ghcr.io/ublue-os/akmods
+  AKMODS_ZFS_IMAGE: ghcr.io/ublue-os/akmods-zfs
+  IMAGE_INPUTS: Containerfile build_files ublue-os.pub cosign.pub .github
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-v2
   cancel-in-progress: false
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compare inputs against the published image
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          MAX_AGE_DAYS: 7
+        run: |
+          if [[ "${EVENT}" != schedule ]]; then
+            echo "${EVENT} run: building unconditionally" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          fedora=$(sed -n 's/^ARG FEDORA_VERSION=//p' Containerfile)
+          [[ -n "${fedora}" ]] || { echo "FEDORA_VERSION not found in Containerfile" >&2; exit 1; }
+
+          # an unreachable upstream fails this job rather than starting a build that cannot succeed
+          base=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://${BASE_IMAGE}")
+          akmods=$(skopeo inspect --no-tags --format '{{index .Labels "org.opencontainers.image.version"}}' \
+            "docker://${AKMODS_IMAGE}:coreos-stable-${fedora}")
+          akmods_zfs=$(skopeo inspect --no-tags --format '{{index .Labels "org.opencontainers.image.version"}}' \
+            "docker://${AKMODS_ZFS_IMAGE}:coreos-stable-${fedora}")
+          zfs=$(.github/scripts/zfs-version.sh "${AKMODS_ZFS_IMAGE}:coreos-stable-${fedora}")
+
+          published=$(skopeo inspect --no-tags "docker://${IMAGE_REGISTRY,,}/${IMAGE_NAME}:stable") || published='{}'
+          label() { jq -r --arg k "$1" '.Labels[$k] // "missing"' <<<"${published}"; }
+
+          changed=()
+          compare() {
+            local have want="$3"
+            have=$(label "$1")
+            if [[ -z "${want}" || "${want}" == "<no value>" ]]; then
+              changed+=("$2: upstream value missing, cannot confirm it is unchanged")
+            elif [[ "${have}" != "${want}" ]]; then
+              changed+=("$2: ${have:0:40} -> ${want:0:40}")
+            fi
+          }
+          # the akmods label carries the kernel version only; zfs is read from the packaged rpms
+          compare org.opencontainers.image.base.digest "aurora base" "${base}"
+          compare aurora-zfs.akmods.version "akmods kernel" "${akmods}"
+          compare aurora-zfs.akmods-zfs.version "akmods-zfs kernel" "${akmods_zfs}"
+          compare aurora-zfs.zfs.version "zfs" "${zfs}"
+
+          # scheduled start times drift by hours, so allow half a day of slack
+          created=$(jq -r '.Created // "missing"' <<<"${published}")
+          if ! created_s=$(date -d "${created}" +%s 2>/dev/null); then
+            changed+=("published image has no usable build date (${created})")
+          elif (( $(date +%s) - created_s >= MAX_AGE_DAYS * 86400 - 43200 )); then
+            changed+=("published image is $(( ($(date +%s) - created_s) / 3600 ))h old; weekly rebuild")
+          fi
+
+          rev=$(label org.opencontainers.image.revision)
+          if ! git cat-file -e "${rev}^{commit}" 2>/dev/null; then
+            changed+=("repo: published image has no known revision (${rev:0:12})")
+          elif [[ -n "$(git diff --name-only "${rev}" HEAD -- ${IMAGE_INPUTS})" ]]; then
+            changed+=("repo: ${rev:0:7} -> ${GITHUB_SHA:0:7}")
+            git log --oneline "${rev}..HEAD" -- ${IMAGE_INPUTS} >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if (( ${#changed[@]} )); then
+            printf -- '- %s\n' "${changed[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing changed since :stable was built; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: release
     permissions:
       contents: read
@@ -51,15 +143,79 @@ jobs:
           echo "Base pinned to ${digest}"
 
       - name: Verify base image signature
+        env:
+          REF: ${{ steps.base.outputs.ref }}
         run: |
-          cosign verify --key ublue-os.pub "${{ steps.base.outputs.ref }}"
+          cosign verify --key ublue-os.pub "${REF}"
+
+      - name: Resolve akmods digests
+        id: akmods
+        run: |
+          fedora=$(sed -n 's/^ARG FEDORA_VERSION=//p' Containerfile)
+          [[ -n "${fedora}" ]] || { echo "FEDORA_VERSION not found in Containerfile" >&2; exit 1; }
+          for image in "${AKMODS_IMAGE}" "${AKMODS_ZFS_IMAGE}"; do
+            tagged="${image}:coreos-stable-${fedora}"
+            digest=$(skopeo inspect --format '{{.Digest}}' "docker://${tagged}")
+            ref="${image}@${digest}"
+            version=$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "docker://${ref}")
+            if [[ ! "${version}" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+              echo "FATAL: ${image} has a missing or malformed version label: '${version}'" >&2
+              exit 1
+            fi
+            key=${image##*/}
+            key=${key//-/_}
+            echo "${key}_name=${tagged}" >> "$GITHUB_OUTPUT"
+            echo "${key}_digest=${digest}" >> "$GITHUB_OUTPUT"
+            echo "${key}_version=${version}" >> "$GITHUB_OUTPUT"
+            echo "${key}_ref=${ref}" >> "$GITHUB_OUTPUT"
+            echo "${image} pinned to ${digest} (${version})"
+          done
+
+      - name: Verify akmods signatures
+        env:
+          AKMODS_REF: ${{ steps.akmods.outputs.akmods_ref }}
+          AKMODS_ZFS_REF: ${{ steps.akmods.outputs.akmods_zfs_ref }}
+        run: |
+          cosign verify --key ublue-os.pub "${AKMODS_REF}"
+          cosign verify --key ublue-os.pub "${AKMODS_ZFS_REF}"
+
+      - name: Read ZFS version
+        id: zfs
+        env:
+          AKMODS_ZFS_REF: ${{ steps.akmods.outputs.akmods_zfs_ref }}
+        run: |
+          version=$(.github/scripts/zfs-version.sh "${AKMODS_ZFS_REF}")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "zfs ${version}"
 
       - name: Build
         id: build
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+          BASE_DIGEST: ${{ steps.base.outputs.digest }}
+          AKMODS_REF: ${{ steps.akmods.outputs.akmods_ref }}
+          AKMODS_NAME: ${{ steps.akmods.outputs.akmods_name }}
+          AKMODS_DIGEST: ${{ steps.akmods.outputs.akmods_digest }}
+          AKMODS_VERSION: ${{ steps.akmods.outputs.akmods_version }}
+          AKMODS_ZFS_REF: ${{ steps.akmods.outputs.akmods_zfs_ref }}
+          AKMODS_ZFS_NAME: ${{ steps.akmods.outputs.akmods_zfs_name }}
+          AKMODS_ZFS_DIGEST: ${{ steps.akmods.outputs.akmods_zfs_digest }}
+          AKMODS_ZFS_VERSION: ${{ steps.akmods.outputs.akmods_zfs_version }}
+          ZFS_VERSION: ${{ steps.zfs.outputs.version }}
         run: |
           podman build \
-            --build-arg BASE_REF="${{ steps.base.outputs.ref }}" \
-            --build-arg BASE_DIGEST="${{ steps.base.outputs.digest }}" \
+            --build-arg BASE_REF="${BASE_REF}" \
+            --build-arg BASE_DIGEST="${BASE_DIGEST}" \
+            --build-arg AKMODS_REF="${AKMODS_REF}" \
+            --build-arg AKMODS_NAME="${AKMODS_NAME}" \
+            --build-arg AKMODS_DIGEST="${AKMODS_DIGEST}" \
+            --build-arg AKMODS_VERSION="${AKMODS_VERSION}" \
+            --build-arg AKMODS_ZFS_REF="${AKMODS_ZFS_REF}" \
+            --build-arg AKMODS_ZFS_NAME="${AKMODS_ZFS_NAME}" \
+            --build-arg AKMODS_ZFS_DIGEST="${AKMODS_ZFS_DIGEST}" \
+            --build-arg AKMODS_ZFS_VERSION="${AKMODS_ZFS_VERSION}" \
+            --build-arg ZFS_VERSION="${ZFS_VERSION}" \
+            --build-arg REVISION="${{ github.sha }}" \
             --security-opt label=disable \
             -t "${IMAGE_NAME}:${{ github.sha }}" \
             .
@@ -67,20 +223,25 @@ jobs:
       - name: Log in to ghcr.io
         if: github.ref == 'refs/heads/main'
         run: |
+          # podman push and skopeo copy must read the same credentials
+          export REGISTRY_AUTH_FILE="${RUNNER_TEMP}/auth.json"
+          echo "REGISTRY_AUTH_FILE=${REGISTRY_AUTH_FILE}" >> "$GITHUB_ENV"
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io \
             -u "${{ github.actor }}" --password-stdin
           echo "${{ secrets.GITHUB_TOKEN }}" | cosign login ghcr.io \
             -u "${{ github.actor }}" --password-stdin
 
-      - name: Push
+      # :candidate is a scratch tag; the dated tag and :stable only ever point
+      # at a digest that has been signed and verified
+      - name: Push candidate
         id: push
         if: github.ref == 'refs/heads/main'
         run: |
           dest="${IMAGE_REGISTRY,,}/${IMAGE_NAME}"
-          for tag in stable "$(date -u +%Y%m%d)"; do
-            podman push "${IMAGE_NAME}:${{ github.sha }}" "docker://${dest}:${tag}"
-          done
-          digest=$(skopeo inspect --format '{{.Digest}}' "docker://${dest}:stable")
+          podman push --digestfile "${RUNNER_TEMP}/digest" \
+            "${IMAGE_NAME}:${{ github.sha }}" "docker://${dest}:candidate"
+          digest=$(<"${RUNNER_TEMP}/digest")
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "dest=${dest}" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
@@ -105,6 +266,18 @@ jobs:
         run: |
           cosign verify --key cosign.pub \
             "${{ steps.push.outputs.dest }}@${{ steps.push.outputs.digest }}"
+
+      - name: Publish dated and stable tags
+        if: github.ref == 'refs/heads/main'
+        env:
+          DEST: ${{ steps.push.outputs.dest }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          for tag in "$(date -u +%Y%m%d)" stable; do
+            skopeo copy --preserve-digests "docker://${DEST}@${DIGEST}" "docker://${DEST}:${tag}"
+            [[ "$(skopeo inspect --format '{{.Digest}}' "docker://${DEST}:${tag}")" == "${DIGEST}" ]]
+            echo ":${tag} -> ${DIGEST}"
+          done
 
       - name: Publish unsigned test image
         if: github.ref == 'refs/heads/main' && inputs.publish_unsigned_test
