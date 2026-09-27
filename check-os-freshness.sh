@@ -12,6 +12,7 @@ STAT=/usr/bin/stat
 
 WARN_DAYS="${WARN_DAYS:-5}"
 CRIT_DAYS="${CRIT_DAYS:-10}"
+PICKUP_HOURS="${PICKUP_HOURS:-36}"
 REBOOT_DAYS="${REBOOT_DAYS:-3}"
 UPSTREAM=ghcr.io/ublue-os/aurora
 # written by ostree when an update is staged, gone after the reboot that applies it
@@ -49,20 +50,23 @@ print((datetime.datetime.now(datetime.timezone.utc)-released).days, tag)
 ' "${base_version}"
 }
 
-origin="" version="" base=""
+origin="" version="" base="" local_digests=""
 if deployment="$("${RPMOSTREE}" status --json 2>&1)" \
     && deployment="$("${PYTHON}" -c '
 import json,sys
-b=[d for d in json.load(sys.stdin)["deployments"] if d.get("booted")][0]
+ds=json.load(sys.stdin)["deployments"]
+b=[d for d in ds if d.get("booted")][0]
 ref=b.get("container-image-reference") or b.get("origin") or "unknown"
 cfg=json.loads(b.get("base-commit-meta",{}).get("ostree.container.image-config") or "{}")
 base=cfg.get("config",{}).get("Labels",{}).get("org.opencontainers.image.base.digest")
 # stock aurora (e.g. after a rollback) is its own base
 if not base and ref.endswith("docker://"+sys.argv[1]+":stable"):
     base=b.get("container-image-reference-digest")
-print(ref, b.get("version") or "unknown", base or "unknown")
+local=",".join(d["container-image-reference-digest"] for d in ds
+               if (d.get("booted") or d.get("staged")) and d.get("container-image-reference-digest"))
+print(ref, b.get("version") or "unknown", base or "unknown", local or "none")
 ' "${UPSTREAM}" <<<"${deployment}" 2>&1)"; then
-    read -r origin version base <<<"${deployment}"
+    read -r origin version base local_digests <<<"${deployment}"
     echo "booted : ${version}  (${origin})"
 else
     notify crit "Freshness check is broken" \
@@ -115,14 +119,22 @@ fi
 
 if [[ "${origin}" == *ghcr.io* ]]; then
     ref="${origin##*docker://}"
-    remote_age="$("${SKOPEO}" inspect "docker://${ref}" 2>/dev/null | "${PYTHON}" -c '
+    read -r remote_hours remote_digest < <("${SKOPEO}" inspect --no-tags "docker://${ref}" 2>/dev/null | "${PYTHON}" -c '
 import json,sys,datetime
-c=json.load(sys.stdin)["Created"]
-c=datetime.datetime.fromisoformat(c.replace("Z","+00:00"))
-print((datetime.datetime.now(datetime.timezone.utc)-c).days)
-' 2>/dev/null)"
-    if [[ "${remote_age}" =~ ^-?[0-9]+$ ]]; then
+i=json.load(sys.stdin)
+c=datetime.datetime.fromisoformat(i["Created"].replace("Z","+00:00"))
+print(int((datetime.datetime.now(datetime.timezone.utc)-c).total_seconds()//3600), i["Digest"])
+' 2>/dev/null)
+    if [[ "${remote_hours}" =~ ^-?[0-9]+$ && "${remote_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        remote_age=$(( remote_hours / 24 ))
         echo "remote : ${remote_age} days old"
+        # uupd runs daily, so a published image should be staged or booted within a day or so. If not,
+        # the update path is broken whatever uupd reports: signature policy, pull, or uupd itself.
+        if (( remote_hours >= PICKUP_HOURS )) && [[ ",${local_digests}," != *",${remote_digest},"* ]]; then
+            notify warning "Update not picked up" \
+                "${ref} was published ${remote_hours} hours ago but is neither booted nor staged. Check 'journalctl -u uupd.service' and 'rpm-ostree upgrade --check'."
+            (( status < 1 )) && status=1
+        fi
         if (( remote_age >= CRIT_DAYS )); then
             notify crit "Registry image is ${remote_age} days old" \
                 "The nightly build is not publishing. This is the Bluefin LTS failure mode."

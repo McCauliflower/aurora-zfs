@@ -65,7 +65,8 @@ Kernel modules are the exception since those have to live in the image itself.
 
 `check-os-freshness.sh` is just a cron-ish check on whether the VM's image is
 stale — dead build, failed push, broken `uupd`, whatever. Same bucket either
-way. Also nags when a staged update has sat unbooted for 3 days.
+way. Also nags when a staged update has sat unbooted for 3 days, and warns
+when a published image still isn't staged or booted 36 hours later.
 
 `verify-image-chain.sh` checks that the recorded base-image digest is actually
 signed by ublue, since a signature only proves *I* signed something, not what
