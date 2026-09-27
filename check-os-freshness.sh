@@ -45,7 +45,9 @@ print((datetime.datetime.now(datetime.timezone.utc)-released).days, tag)
 ' "${base_version}"
 }
 
-read -r origin version base < <("${RPMOSTREE}" status --json | "${PYTHON}" -c '
+origin="" version="" base=""
+if deployment="$("${RPMOSTREE}" status --json 2>&1)" \
+    && deployment="$("${PYTHON}" -c '
 import json,sys
 b=[d for d in json.load(sys.stdin)["deployments"] if d.get("booted")][0]
 ref=b.get("container-image-reference") or b.get("origin") or "unknown"
@@ -55,13 +57,20 @@ base=cfg.get("config",{}).get("Labels",{}).get("org.opencontainers.image.base.di
 if not base and ref.endswith("docker://"+sys.argv[1]+":stable"):
     base=b.get("container-image-reference-digest")
 print(ref, b.get("version") or "unknown", base or "unknown")
-' "${UPSTREAM}")
-
-echo "booted : ${version}  (${origin})"
+' "${UPSTREAM}" <<<"${deployment}" 2>&1)"; then
+    read -r origin version base <<<"${deployment}"
+    echo "booted : ${version}  (${origin})"
+else
+    notify crit "Freshness check is broken" \
+        "Could not read the booted deployment from rpm-ostree status: $(tail -n 1 <<<"${deployment}"). Nothing about the booted image could be checked."
+    status=2
+fi
 
 lag=""
 [[ "${base}" =~ ^sha256:[0-9a-f]{64}$ ]] && lag="$(upstream_lag "${base}")"
-if [[ "${lag}" =~ ^(-?[0-9]+)\ (current|stable-[0-9]{8}\.[0-9]+)$ ]]; then
+if [[ -z "${origin}" ]]; then
+    :   # rpm-ostree failure, already reported
+elif [[ "${lag}" =~ ^(-?[0-9]+)\ (current|stable-[0-9]{8}\.[0-9]+)$ ]]; then
     age="${BASH_REMATCH[1]}" first="${BASH_REMATCH[2]}"
     if [[ "${first}" == current ]]; then
         echo "base   : current with ${UPSTREAM}:stable"
