@@ -8,10 +8,14 @@ PYTHON=/usr/bin/python3
 SYSTEMCTL=/usr/bin/systemctl
 SYSTEMD_CAT=/usr/bin/systemd-cat
 NOTIFY_SEND=/usr/bin/notify-send
+STAT=/usr/bin/stat
 
 WARN_DAYS="${WARN_DAYS:-5}"
 CRIT_DAYS="${CRIT_DAYS:-10}"
+REBOOT_DAYS="${REBOOT_DAYS:-3}"
 UPSTREAM=ghcr.io/ublue-os/aurora
+# written by ostree when an update is staged, gone after the reboot that applies it
+STAGED=/run/ostree/staged-deployment
 
 status=0
 notify() {
@@ -96,6 +100,17 @@ echo "uupd   : ${uupd_result:-unknown}"
 if [[ -n "${uupd_result}" && "${uupd_result}" != "success" ]]; then
     notify crit "Auto-update service failing" "uupd.service result=${uupd_result}"
     status=2
+fi
+
+# The file's mtime is when the pending update was staged, whatever is layered. Re-staging a newer
+# update resets it; the upstream-lag check is the backstop for updates that never get booted.
+staged_at="$("${STAT}" -c %Y "${STAGED}" 2>/dev/null)"
+if [[ "${staged_at}" =~ ^[0-9]+$ ]]; then
+    staged_days=$(( ($(printf '%(%s)T') - staged_at) / 86400 ))
+    echo "staged : ${staged_days} days ago, waiting for a reboot"
+    if (( staged_days >= REBOOT_DAYS )); then
+        notify notice "Reboot to finish updating" "An OS update has been staged for ${staged_days} days."
+    fi
 fi
 
 if [[ "${origin}" == *ghcr.io* ]]; then
