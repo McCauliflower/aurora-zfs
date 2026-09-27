@@ -11,6 +11,7 @@ NOTIFY_SEND=/usr/bin/notify-send
 
 WARN_DAYS="${WARN_DAYS:-5}"
 CRIT_DAYS="${CRIT_DAYS:-10}"
+UPSTREAM=ghcr.io/ublue-os/aurora
 
 status=0
 notify() {
@@ -22,29 +23,63 @@ notify() {
             "${title}" "${body}" 2>/dev/null
 }
 
-read -r origin version < <("${RPMOSTREE}" status --json | "${PYTHON}" -c '
+# prints "<days> <oldest upstream release newer than the base>", or "0 current"
+upstream_lag() {
+    local base="$1" latest base_version
+    latest="$("${SKOPEO}" inspect --no-tags --format '{{.Digest}}' "docker://${UPSTREAM}:stable")" || return 1
+    if [[ "${latest}" == "${base}" ]]; then
+        echo "0 current"
+        return
+    fi
+    base_version="$("${SKOPEO}" inspect --no-tags --format '{{index .Labels "org.opencontainers.image.version"}}' \
+        "docker://${UPSTREAM}@${base}")" || return 1
+    "${SKOPEO}" list-tags "docker://${UPSTREAM}" | "${PYTHON}" -c '
+import json,sys,re,datetime
+key=lambda m: (m.group(1), int(m.group(2)))
+base=key(re.fullmatch(r"\d+\.(\d{8})\.(\d+)", sys.argv[1]))
+newer=sorted((key(m), m.group(0)) for t in json.load(sys.stdin)["Tags"]
+             if (m:=re.fullmatch(r"stable-(\d{8})\.(\d+)", t)) and key(m) > base)
+(day,_),tag=newer[0]
+released=datetime.datetime.strptime(day, "%Y%m%d").replace(tzinfo=datetime.timezone.utc)
+print((datetime.datetime.now(datetime.timezone.utc)-released).days, tag)
+' "${base_version}"
+}
+
+read -r origin version base < <("${RPMOSTREE}" status --json | "${PYTHON}" -c '
 import json,sys
 b=[d for d in json.load(sys.stdin)["deployments"] if d.get("booted")][0]
-print(b.get("container-image-reference") or b.get("origin") or "unknown", b.get("version") or "unknown")
-')
-
-build_date="$(grep -oE '[0-9]{8}' <<<"${version}" | head -1)"
-if [[ -n "${build_date}" ]]; then
-    age=$(( ( $(date +%s) - $(date -d "${build_date}" +%s) ) / 86400 ))
-else
-    age=-1
-fi
+ref=b.get("container-image-reference") or b.get("origin") or "unknown"
+cfg=json.loads(b.get("base-commit-meta",{}).get("ostree.container.image-config") or "{}")
+base=cfg.get("config",{}).get("Labels",{}).get("org.opencontainers.image.base.digest")
+# stock aurora (e.g. after a rollback) is its own base
+if not base and ref.endswith("docker://"+sys.argv[1]+":stable"):
+    base=b.get("container-image-reference-digest")
+print(ref, b.get("version") or "unknown", base or "unknown")
+' "${UPSTREAM}")
 
 echo "booted : ${version}  (${origin})"
-echo "age    : ${age} days"
 
-if (( age >= CRIT_DAYS )); then
-    notify crit "OS image is ${age} days old" \
-        "Updates appear to have stopped. Check the nightly build and 'systemctl status uupd.service'."
+lag=""
+[[ "${base}" =~ ^sha256:[0-9a-f]{64}$ ]] && lag="$(upstream_lag "${base}")"
+if [[ "${lag}" =~ ^(-?[0-9]+)\ (current|stable-[0-9]{8}\.[0-9]+)$ ]]; then
+    age="${BASH_REMATCH[1]}" first="${BASH_REMATCH[2]}"
+    if [[ "${first}" == current ]]; then
+        echo "base   : current with ${UPSTREAM}:stable"
+    else
+        echo "base   : ${first} not booted, ${age} days"
+    fi
+    if (( age >= CRIT_DAYS )); then
+        notify crit "OS is ${age} days behind upstream" \
+            "Aurora ${first} is still not booted. Check for a nightly waiting for approval, the build, 'systemctl status uupd.service', or a pending reboot."
+        status=2
+    elif (( age >= WARN_DAYS )); then
+        notify warning "OS is ${age} days behind upstream" "Aurora ${first} is not booted yet."
+        status=1
+    fi
+else
+    notify crit "Freshness check is broken" \
+        "Could not tell how far the booted image (base ${base:-unknown}) is behind ${UPSTREAM}:stable. The monitor itself needs attention."
     status=2
-elif (( age >= WARN_DAYS )); then
-    notify warning "OS image is ${age} days old" "Expected a newer image by now."
-    status=1
 fi
 
 uupd_result="$("${SYSTEMCTL}" show uupd.service -p Result --value 2>/dev/null)"
