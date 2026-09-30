@@ -28,6 +28,12 @@ notify() {
             -t 0 -i "${icon}" "${title}" "${body}" 2>/dev/null
 }
 
+abort() {
+    fail "$1"
+    notify crit "OS Signature Chain: FAILED" "$1 — see journalctl -u image-chain.service"
+    exit 2
+}
+
 if [[ ${EUID} -eq 0 ]]; then
     echo "refusing to run as root: this parses data fetched from a remote registry" >&2
     exit 64
@@ -42,7 +48,7 @@ for tool in "${COSIGN}" "${SKOPEO}" "${RPMOSTREE}" "${PYTHON}"; do
     [[ "${owner}" == root ]] || fail "${tool} is owned by ${owner}, not root - it can be replaced without root"
     [[ "${mode}" =~ [0-7][0-57][0-57]$ ]] || fail "${tool} is group/world writable (mode ${mode})"
 done
-(( status == 0 )) || { echo "toolchain integrity check failed; not proceeding" >&2; exit "${status}"; }
+(( status == 0 )) || abort "toolchain integrity check failed; not proceeding"
 ok "toolchain is root-owned and not user-writable"
 
 read -r ref repo digest version < <("${RPMOSTREE}" status --json | "${PYTHON}" -c '
@@ -54,15 +60,15 @@ if ":" in repo.rsplit("/",1)[-1]:
     repo=repo.rsplit(":",1)[0]
 print(ref or "-", repo or "-", b.get("container-image-reference-digest") or "-", b.get("version") or "unknown")
 ')
-[[ -z "${ref}" || "${ref}" == "-" ]] && { fail "not running a container image"; exit 2; }
-[[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || { fail "rpm-ostree does not report the digest of the booted image"; exit 2; }
+[[ -z "${ref}" || "${ref}" == "-" ]] && abort "not running a container image"
+[[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || abort "rpm-ostree does not report the digest of the booted image"
 # the tag may already point at a newer build than the one booted, so check the booted digest itself
 image="${repo}@${digest}"
 echo "booted image : ${ref}"
 echo "booted digest : ${digest}"
 echo "booted version : ${version}"
 
-meta="$("${SKOPEO}" inspect "docker://${image}" 2>/dev/null)" || { fail "cannot inspect ${image}"; exit 2; }
+meta="$("${SKOPEO}" inspect "docker://${image}" 2>/dev/null)" || abort "cannot inspect ${image}"
 read -r base_image base_digest < <("${PYTHON}" -c '
 import json,sys
 l=json.load(sys.stdin).get("Labels") or {}
