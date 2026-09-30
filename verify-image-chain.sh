@@ -45,17 +45,24 @@ done
 (( status == 0 )) || { echo "toolchain integrity check failed; not proceeding" >&2; exit "${status}"; }
 ok "toolchain is root-owned and not user-writable"
 
-read -r ref version < <("${RPMOSTREE}" status --json | "${PYTHON}" -c '
+read -r ref repo digest version < <("${RPMOSTREE}" status --json | "${PYTHON}" -c '
 import json,sys
 b=[d for d in json.load(sys.stdin)["deployments"] if d.get("booted")][0]
 ref=(b.get("container-image-reference") or "").split("docker://")[-1]
-print(ref, b.get("version") or "unknown")
+repo=ref.split("@")[0]
+if ":" in repo.rsplit("/",1)[-1]:
+    repo=repo.rsplit(":",1)[0]
+print(ref or "-", repo or "-", b.get("container-image-reference-digest") or "-", b.get("version") or "unknown")
 ')
-[[ -z "${ref}" ]] && { fail "not running a container image"; exit 2; }
+[[ -z "${ref}" || "${ref}" == "-" ]] && { fail "not running a container image"; exit 2; }
+[[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || { fail "rpm-ostree does not report the digest of the booted image"; exit 2; }
+# the tag may already point at a newer build than the one booted, so check the booted digest itself
+image="${repo}@${digest}"
 echo "booted image : ${ref}"
+echo "booted digest : ${digest}"
 echo "booted version : ${version}"
 
-meta="$("${SKOPEO}" inspect "docker://${ref}" 2>/dev/null)" || { fail "cannot inspect ${ref}"; exit 2; }
+meta="$("${SKOPEO}" inspect "docker://${image}" 2>/dev/null)" || { fail "cannot inspect ${image}"; exit 2; }
 read -r base_image base_digest < <("${PYTHON}" -c '
 import json,sys
 l=json.load(sys.stdin).get("Labels") or {}
@@ -69,10 +76,10 @@ else
 fi
 
 if [[ -f "${OWN_KEY}" ]]; then
-    if "${COSIGN}" verify --key "${OWN_KEY}" "${ref}"; then
+    if "${COSIGN}" verify --key "${OWN_KEY}" "${image}"; then
         ok "own signature valid"
     else
-        fail "own signature INVALID for ${ref}"
+        fail "own signature INVALID for ${image}"
     fi
 else
     fail "own public key missing at ${OWN_KEY}"
@@ -96,6 +103,7 @@ fi
 if (( status == 0 )); then
     echo "chain OK"
     body="Booted image: ${ref}
+Digest: ${digest:0:19}...
 Version: ${version}
 Own signature: valid (verified against ${OWN_KEY})
 
@@ -108,6 +116,6 @@ ublue image it was built on top of was itself signed by ublue - nothing in
 the chain has been substituted or tampered with."
     notify info "OS Signature Chain: Verified" "${body}"
 else
-    notify crit "OS Signature Chain: FAILED" "${ref} — see journalctl -u image-chain.service"
+    notify crit "OS Signature Chain: FAILED" "${image} — see journalctl -u image-chain.service"
 fi
 exit "${status}"
