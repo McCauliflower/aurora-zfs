@@ -73,4 +73,18 @@ signed by ublue, since a signature only proves *I* signed something, not what
 it was built from. Refuses to run as root on purpose — it's parsing JSON off
 the network, no reason to give it more than it needs.
 
+`systemd/image-chain.service` runs it as your user, so it has `@USER@`, `@UID@`
+and `@HOME@` placeholders to fill in at install time (run from the repo, as
+yourself, not under sudo):
+
+```
+unit="$(mktemp)"
+sed -e "s|@USER@|$(id -un)|g" -e "s|@UID@|$(id -u)|g" -e "s|@HOME@|${HOME}|g" \
+    systemd/image-chain.service > "${unit}"
+sudo install -o root -g root -m 0644 "${unit}" /etc/systemd/system/image-chain.service
+sudo install -o root -g root -m 0644 systemd/image-chain.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+rm "${unit}"
+```
+
 
