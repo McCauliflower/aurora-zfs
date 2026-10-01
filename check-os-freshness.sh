@@ -87,7 +87,7 @@ elif [[ "${lag}" =~ ^(-?[0-9]+)\ (current|stable-[0-9]{8}\.[0-9]+)$ ]]; then
     fi
     if (( age >= CRIT_DAYS )); then
         notify crit "OS is ${age} days behind upstream" \
-            "Aurora ${first} is still not booted. Check for a nightly waiting for approval, the build, 'systemctl status uupd.service', or a pending reboot."
+            "Aurora ${first} is still not booted. Check the nightly build, 'systemctl status uupd.service', or a pending reboot."
         status=2
     elif (( age >= WARN_DAYS )); then
         notify warning "OS is ${age} days behind upstream" "Aurora ${first} is not booted yet."
