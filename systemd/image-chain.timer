@@ -3,6 +3,7 @@ Description=Verify OS image signature chain back to the ublue base
 
 [Timer]
 OnCalendar=weekly
+OnBootSec=15min
 Persistent=true
 RandomizedDelaySec=30m
 
