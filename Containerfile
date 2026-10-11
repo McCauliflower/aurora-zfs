@@ -45,4 +45,6 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/var/log \
     FEDORA_VERSION=${FEDORA_VERSION} /ctx/zfs.sh
 
+RUN rm -f /usr/lib/udev/rules.d/10-switch.rules
+
 RUN bootc container lint
