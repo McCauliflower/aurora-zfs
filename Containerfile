@@ -1,5 +1,5 @@
 # bump FEDORA_VERSION when aurora's stable stream moves to the next fedora release
-ARG FEDORA_VERSION=44
+ARG FEDORA_VERSION=45
 ARG BASE_REF=ghcr.io/ublue-os/aurora:stable
 ARG AKMODS_REF=ghcr.io/ublue-os/akmods:coreos-stable-${FEDORA_VERSION}
 ARG AKMODS_ZFS_REF=ghcr.io/ublue-os/akmods-zfs:coreos-stable-${FEDORA_VERSION}
